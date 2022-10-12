@@ -40,6 +40,10 @@ const (
 	liqonetPostroutingClusterChainPrefix = "LIQO-PSTRT-CLS-"
 	// liqonetPreroutingClusterChainPrefix prefix used to name the prerouting chains for a specific cluster.
 	liqonetPreroutingClusterChainPrefix = "LIQO-PRRT-CLS-"
+	// liqonetForwardingClusterChainPrefix prefix used to name the forwarding chains for a specific cluster.
+	liqonetForwardingClusterChainPrefix = "LIQO-FRWD-CLS-"
+	// liqonetForwardingClusterPodsChainPrefix prefix used to name the forwarding chains for pods in a specific cluster.
+	liqonetForwardingClusterPodsChainPrefix = "LIQO-FRWD-PODS-CLS-"
 	// liqonetInputClusterChainPrefix prefix used to name the input chains for a specific cluster.
 	liqonetForwardingExtClusterChainPrefix = "LIQO-FRWD-EXT-CLS-"
 	// liqonetPreRoutingMappingClusterChainPrefix prefix used to name the prerouting mapping chain for a specific cluster.
@@ -68,6 +72,12 @@ const (
 	ACCEPT = "ACCEPT"
 	// DROP action constant.
 	DROP = "DROP"
+	// iptables module for accessing the connection tracking state for a packet
+	stateModule = "state"
+	// ESTABLISHED state: the packet is associated with a connection which has seen packets in both directions
+	ESTABLISHED = "ESTABLISHED"
+	// NEW state: the packet has started a new connection, or otherwise associated with a connection which has not seen packets in both directions
+	NEW = "NEW"
 )
 
 // IPTableRule is a slice of string. This is the format used by module go-iptables.
@@ -312,6 +322,7 @@ func (h IPTHandler) getExistingChainRules(clusterID, chain string) ([]string, er
 func getChainsPerCluster(clusterID string) []string {
 	chains := []string{
 		getClusterForwardExtChain(clusterID),
+		getClusterPodsForwardChain(clusterID),
 		getClusterPostRoutingChain(clusterID),
 		getClusterPreRoutingChain(clusterID),
 		getClusterPreRoutingMappingChain(clusterID),
@@ -342,7 +353,8 @@ func (h IPTHandler) EnsureChainsPerCluster(clusterID string) error {
 // the table name the chain should belong to.
 func getTableFromChain(chain string) string {
 	// First manage the case the chain is a cluster chain
-	if strings.Contains(chain, liqonetForwardingExtClusterChainPrefix) {
+	if strings.Contains(chain, liqonetForwardingExtClusterChainPrefix) ||
+		strings.Contains(chain, liqonetForwardingClusterPodsChainPrefix) {
 		return filterTable
 	}
 	if strings.Contains(chain, liqonetPostroutingClusterChainPrefix) ||
@@ -472,6 +484,40 @@ func (h IPTHandler) EnsureForwardExtRules(tep *netv1alpha1.TunnelEndpoint) error
 		return err
 	}
 	return h.updateRulesPerChain(getClusterForwardExtChain(tep.Spec.ClusterIdentity.ClusterID), rules)
+}
+
+// EnsureClusterPodsForwardRules ensures the forward rules for a given cluster and pod are in place and updated.
+func (h IPTHandler) EnsureClusterPodsForwardRules(clusterID, podIP string) error {
+	rules := []IPTableRule{{"-d", podIP, "-m", stateModule, "--state", NEW, ESTABLISHED, "-j", ACCEPT}}
+	return h.updateRulesPerChain(getClusterPodsForwardChain(clusterID), rules)
+}
+
+// DeleteClusterPodsForwardRules deletes the forward rules for a given cluster and pod.
+func (h IPTHandler) DeleteClusterPodsForwardRules(clusterID, podIP string) error {
+	// Get chain
+	chain := getClusterPodsForwardChain(clusterID)
+
+	// Get existing rules in chain
+	rules, err := h.ListRulesInChain(chain)
+	if err != nil {
+		return fmt.Errorf("unable to list rules in chain %s (table %s): %w", chain, getTableFromChain(chain), err)
+	}
+
+	// Get iptables table
+	table := getTableFromChain(chain)
+
+	for _, rule := range rules {
+		if !strings.Contains(rule, podIP) {
+			continue
+		}
+		// Delete rule in chain
+		if err := h.ipt.Delete(table, chain, rule); err != nil {
+			return err
+		}
+		klog.Infof("Deleted rule %s in chain %s (table %s)", rule, chain, table)
+	}
+
+	return nil
 }
 
 // EnsurePostroutingRules makes sure that the postrouting rules for a given cluster are in place and updated.
@@ -781,7 +827,10 @@ func getChainRulesPerCluster(tep *netv1alpha1.TunnelEndpoint) (map[string][]IPTa
 		IPTableRule{
 			"-s", remotePodCIDR,
 			"-d", localRemappedExternalCIDR,
-			"-j", getClusterForwardExtChain(clusterID)})
+			"-j", getClusterForwardExtChain(clusterID)},
+		IPTableRule{
+			"-s", remotePodCIDR,
+			"-j", getClusterPodsForwardChain(clusterID)})
 
 	chainRules[liqonetPreroutingChain] = append(chainRules[liqonetPreroutingChain],
 		IPTableRule{
@@ -824,6 +873,10 @@ func getClusterPostRoutingChainComment(clusterName, typeCIDR string) string {
 
 func getClusterForwardExtChain(clusterID string) string {
 	return fmt.Sprintf("%s%s", liqonetForwardingExtClusterChainPrefix, strings.Split(clusterID, "-")[0])
+}
+
+func getClusterPodsForwardChain(clusterID string) string {
+	return fmt.Sprintf("%s%s", liqonetForwardingClusterPodsChainPrefix, strings.Split(clusterID, "-")[0])
 }
 
 func getClusterPreRoutingMappingChain(clusterID string) string {
