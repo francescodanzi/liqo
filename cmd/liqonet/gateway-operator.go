@@ -29,7 +29,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 
-	"github.com/liqotech/liqo/apis/discovery/v1alpha1"
 	tunneloperator "github.com/liqotech/liqo/internal/liqonet/tunnel-operator"
 	liqoconst "github.com/liqotech/liqo/pkg/consts"
 	"github.com/liqotech/liqo/pkg/liqonet/conncheck"
@@ -49,7 +48,7 @@ type gatewayOperatorFlags struct {
 	tunnelMTU            uint
 	tunnelListeningPort  uint
 	updateStatusInterval time.Duration
-	clusterIdentity      v1alpha1.ClusterIdentity
+	clusterIdentityFlags argsutils.ClusterIdentityFlags
 }
 
 func addGatewayOperatorFlags(liqonet *gatewayOperatorFlags) {
@@ -71,8 +70,7 @@ func addGatewayOperatorFlags(liqonet *gatewayOperatorFlags) {
 		"ping-loss-threshold is the number of lost packets after which the connection check is considered as failed.")
 	flag.DurationVar(&conncheck.PingInterval, "gateway.ping-interval", 2*time.Second,
 		"ping-interval is the interval between two connection checks")
-	clusterIdentityFlags := argsutils.NewClusterIdentityFlags(true, nil)
-	liqonet.clusterIdentity = clusterIdentityFlags.ReadOrDie()
+	liqonet.clusterIdentityFlags = argsutils.NewClusterIdentityFlags(true, nil)
 }
 
 func runGatewayOperator(commonFlags *liqonetCommonFlags, gatewayFlags *gatewayOperatorFlags) {
@@ -81,7 +79,7 @@ func runGatewayOperator(commonFlags *liqonetCommonFlags, gatewayFlags *gatewayOp
 	leaseDuration := gatewayFlags.leaseDuration
 	renewDeadLine := gatewayFlags.renewDeadline
 	retryPeriod := gatewayFlags.retryPeriod
-	localClusterID := gatewayFlags.clusterIdentity.ClusterID
+	clusterIdentity := gatewayFlags.clusterIdentityFlags.ReadOrDie()
 
 	// If port is not in the correct range, then return an error.
 	if gatewayFlags.tunnelListeningPort < liqoconst.UDPMinPort || gatewayFlags.tunnelListeningPort > liqoconst.UDPMaxPort {
@@ -183,7 +181,7 @@ func runGatewayOperator(commonFlags *liqonetCommonFlags, gatewayFlags *gatewayOp
 		klog.Errorf("unable to setup natmapping controller: %s", err)
 		os.Exit(1)
 	}
-	offloadedPodController := tunneloperator.NewOffloadedPodController(main.GetClient(), gatewayNetns, localClusterID)
+	offloadedPodController := tunneloperator.NewOffloadedPodController(main.GetClient(), gatewayNetns, clusterIdentity.ClusterID)
 	if err = offloadedPodController.SetupWithManager(main); err != nil {
 		klog.Errorf("unable to setup offloaded pod controller: %s", err)
 		os.Exit(1)
