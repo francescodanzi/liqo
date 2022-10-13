@@ -18,6 +18,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/coreos/go-iptables/iptables"
 	"k8s.io/klog/v2"
@@ -79,6 +80,11 @@ const (
 	// NEW state: the packet has started a new connection, or otherwise associated with a connection which has not seen packets in both directions
 	NEW = "NEW"
 )
+
+type PodInfo struct {
+	PodIP           string
+	RemoteClusterID string
+}
 
 // IPTableRule is a slice of string. This is the format used by module go-iptables.
 type IPTableRule []string
@@ -286,7 +292,7 @@ func (h IPTHandler) EnsureChainRulesPerCluster(tep *netv1alpha1.TunnelEndpoint) 
 		if err != nil {
 			return fmt.Errorf("cannot get existing chain rules per cluster %s: %w", tep.Spec.ClusterIdentity, err)
 		}
-		if err := h.updateSpecificRulesPerChain(chain, rules, newRules); err != nil {
+		if err := h.updateSpecificRulesPerChain(chain, rules, newRules, false); err != nil {
 			return fmt.Errorf("cannot update rule for chain %s (table %s): %w", chain, getTableFromChain(chain), err)
 		}
 	}
@@ -487,9 +493,35 @@ func (h IPTHandler) EnsureForwardExtRules(tep *netv1alpha1.TunnelEndpoint) error
 }
 
 // EnsureClusterPodsForwardRules ensures the forward rules for a given cluster and pod are in place and updated.
-func (h IPTHandler) EnsureClusterPodsForwardRules(clusterID, podIP string) error {
-	rules := []IPTableRule{{"-d", podIP, "-m", stateModule, "--state", NEW, ESTABLISHED, "-j", ACCEPT}}
-	return h.updateRulesPerChain(getClusterPodsForwardChain(clusterID), rules)
+func (h IPTHandler) EnsureClusterPodsForwardRules(podsInfo *sync.Map) error {
+	rulesPerCluster := buildRulesPerCluster(podsInfo)
+
+	for clusterID, rules := range rulesPerCluster {
+		if err := h.updateRulesPerChain(getClusterPodsForwardChain(clusterID), rules, true); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func buildRulesPerCluster(podsInfo *sync.Map) map[string][]IPTableRule {
+	rulesPerCluster := map[string][]IPTableRule{}
+
+	podsInfo.Range(func(key, value any) bool {
+		podInfo := value.(PodInfo)
+		rulesPerCluster[podInfo.RemoteClusterID] = append(
+			rulesPerCluster[podInfo.RemoteClusterID],
+			IPTableRule{"-d", podInfo.PodIP, "-j", ACCEPT, "-m", stateModule, "--state", fmt.Sprintf("%s,%s", NEW, ESTABLISHED)},
+		)
+		return true
+	})
+
+	for clusterID := range rulesPerCluster {
+		rulesPerCluster[clusterID] = append([]IPTableRule{{"-j", DROP}}, rulesPerCluster[clusterID]...)
+	}
+
+	return rulesPerCluster
 }
 
 // DeleteClusterPodsForwardRules deletes the forward rules for a given cluster and pod.
@@ -526,7 +558,7 @@ func (h IPTHandler) EnsurePostroutingRules(tep *netv1alpha1.TunnelEndpoint) erro
 	if err != nil {
 		return err
 	}
-	return h.updateRulesPerChain(getClusterPostRoutingChain(tep.Spec.ClusterIdentity.ClusterID), rules)
+	return h.updateRulesPerChain(getClusterPostRoutingChain(tep.Spec.ClusterIdentity.ClusterID), rules, false)
 }
 
 // EnsurePreroutingRulesPerTunnelEndpoint makes sure that the prerouting rules extracted from a
@@ -536,7 +568,7 @@ func (h IPTHandler) EnsurePreroutingRulesPerTunnelEndpoint(tep *netv1alpha1.Tunn
 	if err != nil {
 		return err
 	}
-	return h.updateRulesPerChain(getClusterPreRoutingChain(tep.Spec.ClusterIdentity.ClusterID), rules)
+	return h.updateRulesPerChain(getClusterPreRoutingChain(tep.Spec.ClusterIdentity.ClusterID), rules, false)
 }
 
 // EnsurePreroutingRulesPerNatMapping makes sure that the prerouting rules extracted from a
@@ -547,7 +579,7 @@ func (h IPTHandler) EnsurePreroutingRulesPerNatMapping(nm *netv1alpha1.NatMappin
 	if err != nil {
 		return err
 	}
-	return h.updateRulesPerChain(getClusterPreRoutingMappingChain(clusterID), rules)
+	return h.updateRulesPerChain(getClusterPreRoutingMappingChain(clusterID), rules, false)
 }
 
 func getPreRoutingRulesPerTunnelEndpoint(tep *netv1alpha1.TunnelEndpoint) ([]IPTableRule, error) {
@@ -689,7 +721,7 @@ func (h IPTHandler) insertLiqoRuleIfNotExists(chain string, rule IPTableRule) er
 }
 
 // Function to update specific rules in a given chain.
-func (h IPTHandler) updateSpecificRulesPerChain(chain string, existingRules []string, newRules []IPTableRule) error {
+func (h IPTHandler) updateSpecificRulesPerChain(chain string, existingRules []string, newRules []IPTableRule, prepend bool) error {
 	table := getTableFromChain(chain)
 	for _, existingRuleString := range existingRules {
 		existingRule, err := ParseRule(existingRuleString)
@@ -713,7 +745,7 @@ func (h IPTHandler) updateSpecificRulesPerChain(chain string, existingRules []st
 			klog.Infof("Deleted outdated rule %s from chain %s (table %s)", existingRule, chain, table)
 		}
 	}
-	err := h.insertRulesIfNotPresent(table, chain, newRules)
+	err := h.insertRulesIfNotPresent(table, chain, newRules, prepend)
 	if err != nil {
 		return fmt.Errorf("cannot add new rules in chain %s (table %s): %w", chain, table, err)
 	}
@@ -721,15 +753,15 @@ func (h IPTHandler) updateSpecificRulesPerChain(chain string, existingRules []st
 }
 
 // Function to updates rules in a given chain.
-func (h IPTHandler) updateRulesPerChain(chain string, newRules []IPTableRule) error {
+func (h IPTHandler) updateRulesPerChain(chain string, newRules []IPTableRule, prepend bool) error {
 	existingRules, err := h.ListRulesInChain(chain)
 	if err != nil {
 		return fmt.Errorf("cannot list rules in chain %s (table %s): %w", chain, getTableFromChain(chain), err)
 	}
-	return h.updateSpecificRulesPerChain(chain, existingRules, newRules)
+	return h.updateSpecificRulesPerChain(chain, existingRules, newRules, prepend)
 }
 
-func (h IPTHandler) insertRulesIfNotPresent(table, chain string, rules []IPTableRule) error {
+func (h IPTHandler) insertRulesIfNotPresent(table, chain string, rules []IPTableRule, prepend bool) error {
 	for _, rule := range rules {
 		exists, err := h.ipt.Exists(table, chain, rule...)
 		if err != nil {
@@ -737,8 +769,14 @@ func (h IPTHandler) insertRulesIfNotPresent(table, chain string, rules []IPTable
 			return err
 		}
 		if !exists {
-			if err := h.ipt.AppendUnique(table, chain, rule...); err != nil {
-				return err
+			if prepend {
+				if err := h.ipt.Insert(table, chain, 1, rule...); err != nil {
+					return err
+				}
+			} else {
+				if err := h.ipt.Append(table, chain, rule...); err != nil {
+					return err
+				}
 			}
 			klog.Infof("Inserting rule '%s' in chain %s (table %s)", rule, chain, table)
 		}

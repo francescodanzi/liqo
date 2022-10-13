@@ -18,6 +18,7 @@ package tunneloperator
 
 import (
 	"context"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,24 +32,25 @@ import (
 
 	"github.com/containernetworking/plugins/pkg/ns"
 	liqoconsts "github.com/liqotech/liqo/pkg/consts"
-	"github.com/liqotech/liqo/pkg/liqonet/iptables"
+	liqoiptables "github.com/liqotech/liqo/pkg/liqonet/iptables"
 	liqovk "github.com/liqotech/liqo/pkg/virtualKubelet/forge"
 )
 
 // OffloadedPodController reconciles an offloaded Pod object
 type OffloadedPodController struct {
 	client.Client
-	iptables.IPTHandler
+	liqoiptables.IPTHandler
 	Scheme       *runtime.Scheme
 	gatewayNetns ns.NetNS
+	// Local cache of podInfo objects
+	podsInfo *sync.Map
 }
 
-//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
+//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;
+//+kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;
 
 func NewOffloadedPodController(cl client.Client, gatewayNetns ns.NetNS) (*OffloadedPodController, error) {
-	iptablesHandler, err := iptables.NewIPTHandler()
+	iptablesHandler, err := liqoiptables.NewIPTHandler()
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +58,7 @@ func NewOffloadedPodController(cl client.Client, gatewayNetns ns.NetNS) (*Offloa
 		Client:       cl,
 		IPTHandler:   iptablesHandler,
 		gatewayNetns: gatewayNetns,
+		podsInfo:     &sync.Map{},
 	}, nil
 }
 
@@ -74,48 +77,58 @@ func (r *OffloadedPodController) Reconcile(ctx context.Context, req ctrl.Request
 	nsName := req.NamespacedName
 	klog.Infof("Reconcile Pod %q", nsName.Name)
 
+	var podInfo liqoiptables.PodInfo
+
+	value, ok := r.podsInfo.Load(nsName)
+	if ok {
+		podInfo = value.(liqoiptables.PodInfo)
+	}
+
 	pod := corev1.Pod{}
 	if err := r.Get(ctx, nsName, &pod); err != nil {
 		err = client.IgnoreNotFound(err)
 		if err == nil {
-			klog.Infof("Pod %q not found: skipping the creation of iptables rule", nsName.Name)
+			// Pod not found: if podInfo found in r.podsInfo map, delete it together with relevant iptables rules
+			klog.Infof("Pod %q not found: trying to delete relevant iptables rules for cluster %q", nsName.Name, podInfo.RemoteClusterID)
+			if ok {
+				if err := r.gatewayNetns.Do(func(nn ns.NetNS) error {
+					return r.DeleteClusterPodsForwardRules(podInfo.RemoteClusterID, podInfo.PodIP)
+				}); err != nil {
+					klog.Errorf("Error while deleting iptables rules for cluster %q and pod %q: %w", podInfo.RemoteClusterID, nsName.Name, err)
+					return ctrl.Result{}, err
+				}
+				r.podsInfo.Delete(nsName)
+			}
 		}
 		return ctrl.Result{}, err
 	}
 
-	remoteClusterID := pod.Labels[liqovk.LiqoOriginClusterIDKey]
+	// Build podInfo object and store it in r.podsInfo map
+	podInfo = liqoiptables.PodInfo{
+		PodIP:           pod.Status.PodIP,
+		RemoteClusterID: pod.Labels[liqovk.LiqoOriginClusterIDKey],
+	}
+	r.podsInfo.Store(nsName, podInfo)
 
 	// Intercept if the object is under deletion
 	if !pod.ObjectMeta.DeletionTimestamp.IsZero() {
-		// Delete iptables rules for remote cluster id if being deleted
-		klog.Infof("Pod %q is under deletion: trying to delete relevant iptables rule for cluster %q", nsName.Name, remoteClusterID)
-		if err := r.executeInGatewayNetns(r.DeleteClusterPodsForwardRules, remoteClusterID, pod.Status.PodIP); err != nil {
-			klog.Errorf("Error while deleting iptables rules for cluster %q and pod %q: %w", remoteClusterID, nsName.Name, err)
-			return ctrl.Result{}, err
-		}
+		// Pod under deletion: skip creation of iptables rules and return no error
+		klog.Infof("Pod %q under deletion: skipping the creation of iptables rules for cluster %q", nsName.Name, podInfo.RemoteClusterID)
 		return ctrl.Result{}, nil
 	}
 
 	// Ensure iptables rules for that pod ip and remote cluster id otherwise
-	if err := r.executeInGatewayNetns(r.EnsureClusterPodsForwardRules, remoteClusterID, pod.Status.PodIP); err != nil {
-		klog.Errorf("Error while ensuring iptables rules for cluster %q and pod %q: %w", remoteClusterID, nsName.Name, err)
+	klog.Infof("Ensuring iptables rules for cluster %q and pod %q", podInfo.RemoteClusterID, nsName.Name)
+	if err := r.gatewayNetns.Do(
+		func(ns.NetNS) error {
+			return r.EnsureClusterPodsForwardRules(r.podsInfo)
+		},
+	); err != nil {
+		klog.Errorf("Error while ensuring iptables rules for cluster %q and pod %q: %w", podInfo.RemoteClusterID, nsName.Name, err)
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
-}
-
-func (r *OffloadedPodController) executeInGatewayNetns(f func(string, string) error, remoteClusterID, podIP string) error {
-	if err := r.gatewayNetns.Do(func(netns ns.NetNS) error {
-		if err := f(remoteClusterID, podIP); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
