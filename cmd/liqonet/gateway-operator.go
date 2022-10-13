@@ -35,7 +35,6 @@ import (
 	liqonetns "github.com/liqotech/liqo/pkg/liqonet/netns"
 	liqonetutils "github.com/liqotech/liqo/pkg/liqonet/utils"
 	"github.com/liqotech/liqo/pkg/liqonet/utils/links"
-	argsutils "github.com/liqotech/liqo/pkg/utils/args"
 	"github.com/liqotech/liqo/pkg/utils/mapper"
 	"github.com/liqotech/liqo/pkg/utils/restcfg"
 )
@@ -48,7 +47,6 @@ type gatewayOperatorFlags struct {
 	tunnelMTU            uint
 	tunnelListeningPort  uint
 	updateStatusInterval time.Duration
-	clusterIdentityFlags argsutils.ClusterIdentityFlags
 }
 
 func addGatewayOperatorFlags(liqonet *gatewayOperatorFlags) {
@@ -70,7 +68,6 @@ func addGatewayOperatorFlags(liqonet *gatewayOperatorFlags) {
 		"ping-loss-threshold is the number of lost packets after which the connection check is considered as failed.")
 	flag.DurationVar(&conncheck.PingInterval, "gateway.ping-interval", 2*time.Second,
 		"ping-interval is the interval between two connection checks")
-	liqonet.clusterIdentityFlags = argsutils.NewClusterIdentityFlags(true, nil)
 }
 
 func runGatewayOperator(commonFlags *liqonetCommonFlags, gatewayFlags *gatewayOperatorFlags) {
@@ -79,7 +76,6 @@ func runGatewayOperator(commonFlags *liqonetCommonFlags, gatewayFlags *gatewayOp
 	leaseDuration := gatewayFlags.leaseDuration
 	renewDeadLine := gatewayFlags.renewDeadline
 	retryPeriod := gatewayFlags.retryPeriod
-	clusterIdentity := gatewayFlags.clusterIdentityFlags.ReadOrDie()
 
 	// If port is not in the correct range, then return an error.
 	if gatewayFlags.tunnelListeningPort < liqoconst.UDPMinPort || gatewayFlags.tunnelListeningPort > liqoconst.UDPMaxPort {
@@ -181,7 +177,7 @@ func runGatewayOperator(commonFlags *liqonetCommonFlags, gatewayFlags *gatewayOp
 		klog.Errorf("unable to setup natmapping controller: %s", err)
 		os.Exit(1)
 	}
-	offloadedPodController, err := tunneloperator.NewOffloadedPodController(main.GetClient(), gatewayNetns, clusterIdentity.ClusterID)
+	offloadedPodController, err := tunneloperator.NewOffloadedPodController(main.GetClient(), gatewayNetns)
 	if err != nil {
 		klog.Errorf("an error occurred while creating the offloaded pod controller: %v", err)
 		os.Exit(1)

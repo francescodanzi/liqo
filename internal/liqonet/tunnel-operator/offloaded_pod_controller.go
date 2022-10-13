@@ -39,25 +39,23 @@ import (
 type OffloadedPodController struct {
 	client.Client
 	iptables.IPTHandler
-	Scheme         *runtime.Scheme
-	gatewayNetns   ns.NetNS
-	localClusterID string
+	Scheme       *runtime.Scheme
+	gatewayNetns ns.NetNS
 }
 
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
 
-func NewOffloadedPodController(cl client.Client, gatewayNetns ns.NetNS, localClusterID string) (*OffloadedPodController, error) {
+func NewOffloadedPodController(cl client.Client, gatewayNetns ns.NetNS) (*OffloadedPodController, error) {
 	iptablesHandler, err := iptables.NewIPTHandler()
 	if err != nil {
 		return nil, err
 	}
 	return &OffloadedPodController{
-		Client:         cl,
-		IPTHandler:     iptablesHandler,
-		gatewayNetns:   gatewayNetns,
-		localClusterID: localClusterID,
+		Client:       cl,
+		IPTHandler:   iptablesHandler,
+		gatewayNetns: gatewayNetns,
 	}, nil
 }
 
@@ -125,8 +123,7 @@ func (r *OffloadedPodController) SetupWithManager(mgr ctrl.Manager) error {
 	// podPredicate selects those pods matching the provided label
 	podPredicate, err := predicate.LabelSelectorPredicate(metav1.LabelSelector{
 		MatchLabels: map[string]string{
-			liqoconsts.ManagedByLabelKey:       liqoconsts.ManagedByShadowPodValue,
-			liqovk.LiqoDestinationClusterIDKey: r.localClusterID,
+			liqoconsts.ManagedByLabelKey: liqoconsts.ManagedByShadowPodValue,
 		},
 	})
 	if err != nil {
