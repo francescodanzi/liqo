@@ -181,7 +181,11 @@ func runGatewayOperator(commonFlags *liqonetCommonFlags, gatewayFlags *gatewayOp
 		klog.Errorf("unable to setup natmapping controller: %s", err)
 		os.Exit(1)
 	}
-	offloadedPodController := tunneloperator.NewOffloadedPodController(main.GetClient(), gatewayNetns, clusterIdentity.ClusterID)
+	offloadedPodController, err := tunneloperator.NewOffloadedPodController(main.GetClient(), gatewayNetns, clusterIdentity.ClusterID)
+	if err != nil {
+		klog.Errorf("an error occurred while creating the offloaded pod controller: %v", err)
+		os.Exit(1)
+	}
 	if err = offloadedPodController.SetupWithManager(main); err != nil {
 		klog.Errorf("unable to setup offloaded pod controller: %s", err)
 		os.Exit(1)

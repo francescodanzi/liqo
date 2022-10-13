@@ -48,12 +48,17 @@ type OffloadedPodController struct {
 //+kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=core,resources=pods/finalizers,verbs=update
 
-func NewOffloadedPodController(cl client.Client, gatewayNetns ns.NetNS, localClusterID string) *OffloadedPodController {
+func NewOffloadedPodController(cl client.Client, gatewayNetns ns.NetNS, localClusterID string) (*OffloadedPodController, error) {
+	iptablesHandler, err := iptables.NewIPTHandler()
+	if err != nil {
+		return nil, err
+	}
 	return &OffloadedPodController{
 		Client:         cl,
+		IPTHandler:     iptablesHandler,
 		gatewayNetns:   gatewayNetns,
 		localClusterID: localClusterID,
-	}
+	}, nil
 }
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -87,7 +92,7 @@ func (r *OffloadedPodController) Reconcile(ctx context.Context, req ctrl.Request
 		// Delete iptables rules for remote cluster id if being deleted
 		klog.Infof("Pod %q is under deletion: trying to delete relevant iptables rule for cluster %q", nsName.Name, remoteClusterID)
 		if err := r.executeInGatewayNetns(r.DeleteClusterPodsForwardRules, remoteClusterID, pod.Status.PodIP); err != nil {
-			klog.Errorf("Error while deleting iptables rules for cluster %q and pod %q", remoteClusterID, nsName.Name)
+			klog.Errorf("Error while deleting iptables rules for cluster %q and pod %q: %w", remoteClusterID, nsName.Name, err)
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -95,7 +100,7 @@ func (r *OffloadedPodController) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Ensure iptables rules for that pod ip and remote cluster id otherwise
 	if err := r.executeInGatewayNetns(r.EnsureClusterPodsForwardRules, remoteClusterID, pod.Status.PodIP); err != nil {
-		klog.Errorf("Error while ensuring iptables rules for cluster %q and pod %q", remoteClusterID, nsName.Name)
+		klog.Errorf("Error while ensuring iptables rules for cluster %q and pod %q: %w", remoteClusterID, nsName.Name, err)
 		return ctrl.Result{}, err
 	}
 
