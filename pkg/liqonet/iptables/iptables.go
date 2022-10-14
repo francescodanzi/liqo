@@ -529,21 +529,21 @@ func (h IPTHandler) DeleteClusterPodsForwardRules(clusterID, podIP string) error
 	// Get chain
 	chain := getClusterPodsForwardChain(clusterID)
 
+	// Get iptables table
+	table := getTableFromChain(chain)
+
 	// Get existing rules in chain
 	rules, err := h.ListRulesInChain(chain)
 	if err != nil {
-		return fmt.Errorf("unable to list rules in chain %s (table %s): %w", chain, getTableFromChain(chain), err)
+		return fmt.Errorf("unable to list rules in chain %s (table %s): %w", chain, table, err)
 	}
-
-	// Get iptables table
-	table := getTableFromChain(chain)
 
 	for _, rule := range rules {
 		if !strings.Contains(rule, podIP) {
 			continue
 		}
 		// Delete rule in chain
-		if err := h.ipt.Delete(table, chain, rule); err != nil {
+		if err := h.ipt.Delete(table, chain, strings.Split(rule, " ")...); err != nil {
 			return err
 		}
 		klog.Infof("Deleted rule %s in chain %s (table %s)", rule, chain, table)
