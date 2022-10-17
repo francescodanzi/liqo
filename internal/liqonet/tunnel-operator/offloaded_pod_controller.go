@@ -117,6 +117,13 @@ func (r *OffloadedPodController) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
+	// Check if the pod IP is set
+	if podInfo.PodIP == "" {
+		// Pod IP address not yet set: skip creation of iptables rules and return no error
+		klog.Infof("Pod %q IP address not yet set: skipping the creation of iptables rules for cluster %q", nsName.Name, podInfo.RemoteClusterID)
+		return ctrl.Result{}, nil
+	}
+
 	// Ensure iptables rules for that pod ip and remote cluster id otherwise
 	klog.Infof("Ensuring iptables rules for cluster %q and pod %q", podInfo.RemoteClusterID, nsName.Name)
 	if err := r.gatewayNetns.Do(

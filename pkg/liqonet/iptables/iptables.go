@@ -508,14 +508,15 @@ func (h IPTHandler) EnsureClusterPodsForwardRules(podsInfo *sync.Map) error {
 func buildRulesPerCluster(podsInfo *sync.Map) map[string][]IPTableRule {
 	rulesPerCluster := map[string][]IPTableRule{}
 
-	podsInfo.Range(func(key, value any) bool {
+	populateRules := func(key, value any) bool {
 		podInfo := value.(PodInfo)
 		rulesPerCluster[podInfo.RemoteClusterID] = append(
 			rulesPerCluster[podInfo.RemoteClusterID],
 			IPTableRule{"-d", podInfo.PodIP, "-j", ACCEPT, "-m", stateModule, "--state", fmt.Sprintf("%s,%s", NEW, ESTABLISHED)},
 		)
 		return true
-	})
+	}
+	podsInfo.Range(populateRules)
 
 	for clusterID := range rulesPerCluster {
 		rulesPerCluster[clusterID] = append([]IPTableRule{{"-j", DROP}}, rulesPerCluster[clusterID]...)
