@@ -21,13 +21,10 @@ import (
 	"time"
 
 	"github.com/containernetworking/plugins/pkg/ns"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 
 	tunneloperator "github.com/liqotech/liqo/internal/liqonet/tunnel-operator"
 	liqoconst "github.com/liqotech/liqo/pkg/consts"
@@ -109,11 +106,11 @@ func runGatewayOperator(commonFlags *liqonetCommonFlags, gatewayFlags *gatewayOp
 		LeaseDuration:                 &leaseDuration,
 		RenewDeadline:                 &renewDeadLine,
 		RetryPeriod:                   &retryPeriod,
-		NewCache: cache.BuilderWithOptions(cache.Options{
-			SelectorsByObject: cache.SelectorsByObject{
-				&corev1.Pod{}: {Field: fields.OneTermEqualSelector("metadata.namespace", podNamespace)},
-			},
-		}),
+		// NewCache: cache.BuilderWithOptions(cache.Options{
+		// 	SelectorsByObject: cache.SelectorsByObject{
+		// 		&corev1.Pod{}: {Field: fields.OneTermEqualSelector("metadata.namespace", podNamespace)},
+		// 	},
+		// }),
 	})
 	if err != nil {
 		klog.Errorf("unable to get main manager: %s", err)

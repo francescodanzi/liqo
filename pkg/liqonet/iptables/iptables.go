@@ -84,6 +84,7 @@ const (
 type PodInfo struct {
 	PodIP           string
 	RemoteClusterID string
+	Deleting        bool
 }
 
 // IPTableRule is a slice of string. This is the format used by module go-iptables.
@@ -489,7 +490,7 @@ func (h IPTHandler) EnsureForwardExtRules(tep *netv1alpha1.TunnelEndpoint) error
 	if err != nil {
 		return err
 	}
-	return h.updateRulesPerChain(getClusterForwardExtChain(tep.Spec.ClusterIdentity.ClusterID), rules)
+	return h.updateRulesPerChain(getClusterForwardExtChain(tep.Spec.ClusterIdentity.ClusterID), rules, false)
 }
 
 // EnsureClusterPodsForwardRules ensures the forward rules for a given cluster and pod are in place and updated.
@@ -497,6 +498,7 @@ func (h IPTHandler) EnsureClusterPodsForwardRules(podsInfo *sync.Map) error {
 	rulesPerCluster := buildRulesPerCluster(podsInfo)
 
 	for clusterID, rules := range rulesPerCluster {
+		// Insert each subsequent rule at top of chain as the first rule (DROP rules will be last)
 		if err := h.updateRulesPerChain(getClusterPodsForwardChain(clusterID), rules, true); err != nil {
 			return err
 		}
@@ -510,47 +512,27 @@ func buildRulesPerCluster(podsInfo *sync.Map) map[string][]IPTableRule {
 
 	populateRules := func(key, value any) bool {
 		podInfo := value.(PodInfo)
-		rulesPerCluster[podInfo.RemoteClusterID] = append(
-			rulesPerCluster[podInfo.RemoteClusterID],
-			IPTableRule{"-d", podInfo.PodIP, "-j", ACCEPT, "-m", stateModule, "--state", fmt.Sprintf("%s,%s", NEW, ESTABLISHED)},
-		)
+
+		// Add DROP rule for each cluster ID at first position
+		if _, ok := rulesPerCluster[podInfo.RemoteClusterID]; !ok {
+			rulesPerCluster[podInfo.RemoteClusterID] = append(
+				rulesPerCluster[podInfo.RemoteClusterID], IPTableRule{"-j", DROP},
+			)
+		}
+
+		// Add rule for pods that are not being deleted
+		if !podInfo.Deleting {
+			rulesPerCluster[podInfo.RemoteClusterID] = append(
+				rulesPerCluster[podInfo.RemoteClusterID],
+				IPTableRule{"-d", podInfo.PodIP, "-m", stateModule, "--state", fmt.Sprintf("%s,%s", NEW, ESTABLISHED), "-j", ACCEPT},
+			)
+		}
+
 		return true
 	}
 	podsInfo.Range(populateRules)
 
-	for clusterID := range rulesPerCluster {
-		rulesPerCluster[clusterID] = append([]IPTableRule{{"-j", DROP}}, rulesPerCluster[clusterID]...)
-	}
-
 	return rulesPerCluster
-}
-
-// DeleteClusterPodsForwardRules deletes the forward rules for a given cluster and pod.
-func (h IPTHandler) DeleteClusterPodsForwardRules(clusterID, podIP string) error {
-	// Get chain
-	chain := getClusterPodsForwardChain(clusterID)
-
-	// Get iptables table
-	table := getTableFromChain(chain)
-
-	// Get existing rules in chain
-	rules, err := h.ListRulesInChain(chain)
-	if err != nil {
-		return fmt.Errorf("unable to list rules in chain %s (table %s): %w", chain, table, err)
-	}
-
-	for _, rule := range rules {
-		if !strings.Contains(rule, podIP) {
-			continue
-		}
-		// Delete rule in chain
-		if err := h.ipt.Delete(table, chain, strings.Split(rule, " ")...); err != nil {
-			return err
-		}
-		klog.Infof("Deleted rule %s in chain %s (table %s)", rule, chain, table)
-	}
-
-	return nil
 }
 
 // EnsurePostroutingRules makes sure that the postrouting rules for a given cluster are in place and updated.
@@ -723,7 +705,9 @@ func (h IPTHandler) insertLiqoRuleIfNotExists(chain string, rule IPTableRule) er
 
 // Function to update specific rules in a given chain.
 func (h IPTHandler) updateSpecificRulesPerChain(chain string, existingRules []string, newRules []IPTableRule, prepend bool) error {
+	// Get iptables table
 	table := getTableFromChain(chain)
+
 	for _, existingRuleString := range existingRules {
 		existingRule, err := ParseRule(existingRuleString)
 		if err != nil {
@@ -736,6 +720,7 @@ func (h IPTHandler) updateSpecificRulesPerChain(chain string, existingRules []st
 		for _, newRule := range newRules {
 			if strings.Contains(existingRule.String(), newRule.String()) {
 				outdated = false
+				break
 			}
 		}
 		if outdated {
