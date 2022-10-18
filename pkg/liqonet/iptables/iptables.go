@@ -41,8 +41,6 @@ const (
 	liqonetPostroutingClusterChainPrefix = "LIQO-PSTRT-CLS-"
 	// liqonetPreroutingClusterChainPrefix prefix used to name the prerouting chains for a specific cluster.
 	liqonetPreroutingClusterChainPrefix = "LIQO-PRRT-CLS-"
-	// liqonetForwardingClusterChainPrefix prefix used to name the forwarding chains for a specific cluster.
-	liqonetForwardingClusterChainPrefix = "LIQO-FRWD-CLS-"
 	// liqonetForwardingClusterPodsChainPrefix prefix used to name the forwarding chains for pods in a specific cluster.
 	liqonetForwardingClusterPodsChainPrefix = "LIQO-FRWD-PODS-CLS-"
 	// liqonetInputClusterChainPrefix prefix used to name the input chains for a specific cluster.
@@ -834,6 +832,7 @@ func getChainRulesPerCluster(tep *netv1alpha1.TunnelEndpoint) (map[string][]IPTa
 	chainRules[liqonetPostroutingChain] = make([]IPTableRule, 0)
 	chainRules[liqonetPreroutingChain] = make([]IPTableRule, 0)
 	chainRules[liqonetForwardingChain] = make([]IPTableRule, 0)
+	chainRules[getClusterPodsForwardChain(clusterID)] = make([]IPTableRule, 0)
 
 	// For these rules, source in not necessary since
 	// the remotePodCIDR is unique in home cluster
@@ -855,6 +854,10 @@ func getChainRulesPerCluster(tep *netv1alpha1.TunnelEndpoint) (map[string][]IPTa
 		IPTableRule{
 			"-s", remotePodCIDR,
 			"-j", getClusterPodsForwardChain(clusterID)})
+
+	chainRules[getClusterPodsForwardChain(clusterID)] = append(chainRules[getClusterPodsForwardChain(clusterID)],
+		IPTableRule{
+			"-j", DROP})
 
 	chainRules[liqonetPreroutingChain] = append(chainRules[liqonetPreroutingChain],
 		IPTableRule{
