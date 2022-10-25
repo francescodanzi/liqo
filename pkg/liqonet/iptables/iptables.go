@@ -230,6 +230,9 @@ func (h IPTHandler) deleteLiqoChainsFromTable(liqoChains map[string]string, tabl
 		chainsToBeRemoved = append(chainsToBeRemoved,
 			getSliceContainingString(existingChains, liqonetForwardingExtClusterChainPrefix)...,
 		)
+		chainsToBeRemoved = append(chainsToBeRemoved,
+			getSliceContainingString(existingChains, liqonetForwardingClusterPodsChainPrefix)...,
+		)
 	}
 	// Delete chains in table
 	if err := h.deleteChainsInTable(table, existingChains, chainsToBeRemoved); err != nil {
@@ -489,6 +492,14 @@ func (h IPTHandler) EnsureForwardExtRules(tep *netv1alpha1.TunnelEndpoint) error
 		return err
 	}
 	return h.updateRulesPerChain(getClusterForwardExtChain(tep.Spec.ClusterIdentity.ClusterID), rules, false)
+}
+
+func (h IPTHandler) EnsureForwardPodsRules(tep *netv1alpha1.TunnelEndpoint) error {
+	rules, err := getClusterPodsForwardRules(tep)
+	if err != nil {
+		return err
+	}
+	return h.updateRulesPerChain(getClusterPodsForwardChain(tep.Spec.ClusterIdentity.ClusterID), rules, false)
 }
 
 // EnsureClusterPodsForwardRules ensures the forward rules for a given cluster and pod are in place and updated.
@@ -780,6 +791,18 @@ func getClusterForwardExtRules(tep *netv1alpha1.TunnelEndpoint) ([]IPTableRule, 
 	}, nil
 }
 
+func getClusterPodsForwardRules(tep *netv1alpha1.TunnelEndpoint) ([]IPTableRule, error) {
+	if err := liqonetutils.CheckTep(tep); err != nil {
+		return nil, fmt.Errorf("invalid TunnelEndpoint resource: %w", err)
+	}
+	return []IPTableRule{
+		{"-m", "comment", "--comment",
+			// WARNING: Never use double-quotes inside the comment, otherwise IpTableRule parser will fail
+			fmt.Sprintf("Drop all traffic from '%s' ('%s') if not towards its own offloaded pods",
+				tep.Spec.ClusterIdentity.ClusterName, tep.Spec.ClusterIdentity.ClusterID), "-j", DROP},
+	}, nil
+}
+
 func getPostroutingRules(tep *netv1alpha1.TunnelEndpoint) ([]IPTableRule, error) {
 	if err := liqonetutils.CheckTep(tep); err != nil {
 		return nil, fmt.Errorf("invalid TunnelEndpoint resource: %w", err)
@@ -832,7 +855,6 @@ func getChainRulesPerCluster(tep *netv1alpha1.TunnelEndpoint) (map[string][]IPTa
 	chainRules[liqonetPostroutingChain] = make([]IPTableRule, 0)
 	chainRules[liqonetPreroutingChain] = make([]IPTableRule, 0)
 	chainRules[liqonetForwardingChain] = make([]IPTableRule, 0)
-	chainRules[getClusterPodsForwardChain(clusterID)] = make([]IPTableRule, 0)
 
 	// For these rules, source in not necessary since
 	// the remotePodCIDR is unique in home cluster
@@ -854,10 +876,6 @@ func getChainRulesPerCluster(tep *netv1alpha1.TunnelEndpoint) (map[string][]IPTa
 		IPTableRule{
 			"-s", remotePodCIDR,
 			"-j", getClusterPodsForwardChain(clusterID)})
-
-	chainRules[getClusterPodsForwardChain(clusterID)] = append(chainRules[getClusterPodsForwardChain(clusterID)],
-		IPTableRule{
-			"-j", DROP})
 
 	chainRules[liqonetPreroutingChain] = append(chainRules[liqonetPreroutingChain],
 		IPTableRule{
