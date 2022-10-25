@@ -26,6 +26,7 @@ import (
 	netv1alpha1 "github.com/liqotech/liqo/apis/net/v1alpha1"
 	"github.com/liqotech/liqo/pkg/consts"
 	"github.com/liqotech/liqo/pkg/liqonet/errors"
+	liqoipset "github.com/liqotech/liqo/pkg/liqonet/ipset"
 	liqonetutils "github.com/liqotech/liqo/pkg/liqonet/utils"
 	"github.com/liqotech/liqo/pkg/utils/slice"
 )
@@ -73,6 +74,8 @@ const (
 	DROP = "DROP"
 	// iptables module for accessing the connection tracking state for a packet
 	stateModule = "state"
+	// iptables module for matching IP sets defined by ipsets
+	setModule = "set"
 	// ESTABLISHED state: the packet is associated with a connection which has seen packets in both directions
 	ESTABLISHED = "ESTABLISHED"
 	// NEW state: the packet has started a new connection, or otherwise associated with a connection which has not seen packets in both directions
@@ -294,7 +297,7 @@ func (h IPTHandler) EnsureChainRulesPerCluster(tep *netv1alpha1.TunnelEndpoint) 
 		if err != nil {
 			return fmt.Errorf("cannot get existing chain rules per cluster %s: %w", tep.Spec.ClusterIdentity, err)
 		}
-		if err := h.updateSpecificRulesPerChain(chain, rules, newRules, false); err != nil {
+		if err := h.updateSpecificRulesPerChain(chain, rules, newRules, false, false); err != nil {
 			return fmt.Errorf("cannot update rule for chain %s (table %s): %w", chain, getTableFromChain(chain), err)
 		}
 	}
@@ -491,24 +494,27 @@ func (h IPTHandler) EnsureForwardExtRules(tep *netv1alpha1.TunnelEndpoint) error
 	if err != nil {
 		return err
 	}
-	return h.updateRulesPerChain(getClusterForwardExtChain(tep.Spec.ClusterIdentity.ClusterID), rules, false)
+	return h.updateRulesPerChain(getClusterForwardExtChain(tep.Spec.ClusterIdentity.ClusterID), rules, false, false)
 }
 
-func (h IPTHandler) EnsureForwardPodsRules(tep *netv1alpha1.TunnelEndpoint) error {
+func (h IPTHandler) EnsurePodsForwardRules(tep *netv1alpha1.TunnelEndpoint) error {
 	rules, err := getClusterPodsForwardRules(tep)
 	if err != nil {
 		return err
 	}
-	return h.updateRulesPerChain(getClusterPodsForwardChain(tep.Spec.ClusterIdentity.ClusterID), rules, false)
+	return h.updateRulesPerChain(getClusterPodsForwardChain(tep.Spec.ClusterIdentity.ClusterID), rules, true, false)
 }
 
-// EnsureClusterPodsForwardRules ensures the forward rules for a given cluster and pod are in place and updated.
-func (h IPTHandler) EnsureClusterPodsForwardRules(podsInfo *sync.Map) error {
-	rulesPerCluster := buildRulesPerCluster(podsInfo)
+// EnsureRulesFor ensures the forward rules for a given cluster and pod are in place and updated.
+func (h IPTHandler) EnsureRulesFor(podsInfo *sync.Map, IPSetHandler *liqoipset.IPSetHandler) error {
+	rulesPerCluster, err := buildRulesPerCluster(podsInfo, IPSetHandler)
+	if err != nil {
+		return err
+	}
 
 	for clusterID, rules := range rulesPerCluster {
 		// Insert each subsequent rule at top of chain as the first rule (DROP rules will be last)
-		if err := h.updateRulesPerChain(getClusterPodsForwardChain(clusterID), rules, true); err != nil {
+		if err := h.updateRulesPerChain(getClusterPodsForwardChain(clusterID), rules, false, true); err != nil {
 			return err
 		}
 	}
@@ -516,32 +522,62 @@ func (h IPTHandler) EnsureClusterPodsForwardRules(podsInfo *sync.Map) error {
 	return nil
 }
 
-func buildRulesPerCluster(podsInfo *sync.Map) map[string][]IPTableRule {
+func buildRulesPerCluster(podsInfo *sync.Map, IPSetHandler *liqoipset.IPSetHandler) (map[string][]IPTableRule, error) {
+	// Map of Pod IPs per cluster
+	ipsPerCluster := map[string][]string{}
+
+	// Populate Pod IPs per cluster
+	podsInfo.Range(func(key, value any) bool {
+		podInfo := value.(PodInfo)
+		if _, ok := ipsPerCluster[podInfo.RemoteClusterID]; !ok {
+			// Add remote cluster ID key (regardless of pod being deleted or not)
+			ipsPerCluster[podInfo.RemoteClusterID] = []string{}
+		}
+		if !podInfo.Deleting {
+			ipsPerCluster[podInfo.RemoteClusterID] = append(ipsPerCluster[podInfo.RemoteClusterID], podInfo.PodIP)
+		}
+		return true
+	})
+
+	// Map of IPTables rules and IP sets per cluster
 	rulesPerCluster := map[string][]IPTableRule{}
 
-	populateRules := func(key, value any) bool {
-		podInfo := value.(PodInfo)
-
-		// Add DROP rule for each cluster ID at first position
-		if _, ok := rulesPerCluster[podInfo.RemoteClusterID]; !ok {
-			rulesPerCluster[podInfo.RemoteClusterID] = append(
-				rulesPerCluster[podInfo.RemoteClusterID], IPTableRule{"-j", DROP},
-			)
+	// Populate IPTables rules and IP set per cluster
+	for clusterID, ips := range ipsPerCluster {
+		// Create IP set
+		setName := fmt.Sprintf("%s-%s", "SET-CLS", strings.Split(clusterID, "-")[0])
+		ipset, err := IPSetHandler.CreateSet(setName, "")
+		if err != nil {
+			klog.Infof("Error while creating IP set %q: %w", setName, err)
+			return nil, err
 		}
 
-		// Add rule for pods that are not being deleted
-		if !podInfo.Deleting {
-			rulesPerCluster[podInfo.RemoteClusterID] = append(
-				rulesPerCluster[podInfo.RemoteClusterID],
-				IPTableRule{"-d", podInfo.PodIP, "-m", stateModule, "--state", fmt.Sprintf("%s,%s", NEW, ESTABLISHED), "-j", ACCEPT},
-			)
+		// Clear IP set (just in case it already existed)
+		if err := IPSetHandler.FlushSet(ipset.Name); err != nil {
+			klog.Infof("Error while deleting all entries from IP set %q: %w", setName, err)
+			return nil, err
 		}
 
-		return true
+		for _, podIP := range ips {
+			// Add pod's IP entry to IP set
+			if err := IPSetHandler.AddEntry(podIP, ipset); err != nil {
+				klog.Infof("Error while adding entry %q to IP set %q: %w", podIP, ipset.Name, err)
+				return nil, err
+			}
+		}
+
+		// Add DROP and match-set rules
+		rulesPerCluster[clusterID] = append(
+			rulesPerCluster[clusterID],
+			IPTableRule{
+				"-j", DROP},
+			IPTableRule{
+				"-m", setModule,
+				"--match-set", ipset.Name, "dst",
+				"-j", ACCEPT})
 	}
-	podsInfo.Range(populateRules)
 
-	return rulesPerCluster
+	return rulesPerCluster, nil
 }
 
 // EnsurePostroutingRules makes sure that the postrouting rules for a given cluster are in place and updated.
@@ -550,7 +586,7 @@ func (h IPTHandler) EnsurePostroutingRules(tep *netv1alpha1.TunnelEndpoint) erro
 	if err != nil {
 		return err
 	}
-	return h.updateRulesPerChain(getClusterPostRoutingChain(tep.Spec.ClusterIdentity.ClusterID), rules, false)
+	return h.updateRulesPerChain(getClusterPostRoutingChain(tep.Spec.ClusterIdentity.ClusterID), rules, false, false)
 }
 
 // EnsurePreroutingRulesPerTunnelEndpoint makes sure that the prerouting rules extracted from a
@@ -560,7 +596,7 @@ func (h IPTHandler) EnsurePreroutingRulesPerTunnelEndpoint(tep *netv1alpha1.Tunn
 	if err != nil {
 		return err
 	}
-	return h.updateRulesPerChain(getClusterPreRoutingChain(tep.Spec.ClusterIdentity.ClusterID), rules, false)
+	return h.updateRulesPerChain(getClusterPreRoutingChain(tep.Spec.ClusterIdentity.ClusterID), rules, false, false)
 }
 
 // EnsurePreroutingRulesPerNatMapping makes sure that the prerouting rules extracted from a
@@ -571,7 +607,7 @@ func (h IPTHandler) EnsurePreroutingRulesPerNatMapping(nm *netv1alpha1.NatMappin
 	if err != nil {
 		return err
 	}
-	return h.updateRulesPerChain(getClusterPreRoutingMappingChain(clusterID), rules, false)
+	return h.updateRulesPerChain(getClusterPreRoutingMappingChain(clusterID), rules, false, false)
 }
 
 func getPreRoutingRulesPerTunnelEndpoint(tep *netv1alpha1.TunnelEndpoint) ([]IPTableRule, error) {
@@ -713,11 +749,14 @@ func (h IPTHandler) insertLiqoRuleIfNotExists(chain string, rule IPTableRule) er
 }
 
 // Function to update specific rules in a given chain.
-func (h IPTHandler) updateSpecificRulesPerChain(chain string, existingRules []string, newRules []IPTableRule, prepend bool) error {
+func (h IPTHandler) updateSpecificRulesPerChain(chain string, existingRules []string, newRules []IPTableRule, keepExistingRules, prepend bool) error {
 	// Get iptables table
 	table := getTableFromChain(chain)
 
 	for _, existingRuleString := range existingRules {
+		if keepExistingRules {
+			break
+		}
 		existingRule, err := ParseRule(existingRuleString)
 		if err != nil {
 			return fmt.Errorf("cannot parse rule %q: %w", existingRuleString, err)
@@ -748,12 +787,12 @@ func (h IPTHandler) updateSpecificRulesPerChain(chain string, existingRules []st
 }
 
 // Function to updates rules in a given chain.
-func (h IPTHandler) updateRulesPerChain(chain string, newRules []IPTableRule, prepend bool) error {
+func (h IPTHandler) updateRulesPerChain(chain string, newRules []IPTableRule, keepExistingRules, prepend bool) error {
 	existingRules, err := h.ListRulesInChain(chain)
 	if err != nil {
 		return fmt.Errorf("cannot list rules in chain %s (table %s): %w", chain, getTableFromChain(chain), err)
 	}
-	return h.updateSpecificRulesPerChain(chain, existingRules, newRules, prepend)
+	return h.updateSpecificRulesPerChain(chain, existingRules, newRules, keepExistingRules, prepend)
 }
 
 func (h IPTHandler) insertRulesIfNotPresent(table, chain string, rules []IPTableRule, prepend bool) error {
@@ -764,7 +803,9 @@ func (h IPTHandler) insertRulesIfNotPresent(table, chain string, rules []IPTable
 			return err
 		}
 		if !exists {
+			verb := "Appended"
 			if prepend {
+				verb = "Prepended"
 				if err := h.ipt.Insert(table, chain, 1, rule...); err != nil {
 					return err
 				}
@@ -773,7 +814,7 @@ func (h IPTHandler) insertRulesIfNotPresent(table, chain string, rules []IPTable
 					return err
 				}
 			}
-			klog.Infof("Inserting rule '%s' in chain %s (table %s)", rule, chain, table)
+			klog.Infof("%s rule '%s' in chain %s (table %s)", verb, rule, chain, table)
 		}
 	}
 	return nil
@@ -796,10 +837,12 @@ func getClusterPodsForwardRules(tep *netv1alpha1.TunnelEndpoint) ([]IPTableRule,
 		return nil, fmt.Errorf("invalid TunnelEndpoint resource: %w", err)
 	}
 	return []IPTableRule{
-		{"-m", "comment", "--comment",
-			// WARNING: Never use double-quotes inside the comment, otherwise IpTableRule parser will fail
-			fmt.Sprintf("Drop all traffic from '%s' ('%s') if not towards its own offloaded pods",
-				tep.Spec.ClusterIdentity.ClusterName, tep.Spec.ClusterIdentity.ClusterID), "-j", DROP},
+		{
+			// "-m", "comment", "--comment",
+			// // WARNING: Never use double-quotes inside the comment, otherwise IpTableRule parser will fail
+			// fmt.Sprintf("Drop all traffic from '%s' ('%s') if not towards its own offloaded pods",
+			// 	tep.Spec.ClusterIdentity.ClusterName, tep.Spec.ClusterIdentity.ClusterID),
+			"-j", DROP},
 	}, nil
 }
 

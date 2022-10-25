@@ -400,7 +400,7 @@ func (tc *TunnelController) EnsureIPTablesRulesPerCluster(tep *netv1alpha1.Tunne
 		tc.Eventf(tep, "Warning", "Processing", "unable to insert iptables rules: %v", err)
 		return err
 	}
-	if err := tc.EnsureForwardPodsRules(tep); err != nil {
+	if err := tc.EnsurePodsForwardRules(tep); err != nil {
 		klog.Errorf("%s -> an error occurred while inserting iptables forwarding rules for the remote peer: %s", tep.Spec.ClusterIdentity, err.Error())
 		tc.Eventf(tep, "Warning", "Processing", "unable to insert iptables rules: %v", err)
 		return err

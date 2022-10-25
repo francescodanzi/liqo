@@ -22,7 +22,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -32,6 +31,7 @@ import (
 
 	"github.com/containernetworking/plugins/pkg/ns"
 	liqoconsts "github.com/liqotech/liqo/pkg/consts"
+	liqoipset "github.com/liqotech/liqo/pkg/liqonet/ipset"
 	liqoiptables "github.com/liqotech/liqo/pkg/liqonet/iptables"
 	liqovk "github.com/liqotech/liqo/pkg/virtualKubelet/forge"
 )
@@ -40,8 +40,11 @@ import (
 type OffloadedPodController struct {
 	client.Client
 	liqoiptables.IPTHandler
-	Scheme       *runtime.Scheme
+	*liqoipset.IPSetHandler
+
+	// Liqo Gateway network namespace
 	gatewayNetns ns.NetNS
+
 	// Local cache of podInfo objects
 	podsInfo *sync.Map
 }
@@ -49,14 +52,20 @@ type OffloadedPodController struct {
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;
 //+kubebuilder:rbac:groups=core,resources=pods/status,verbs=get;
 
+// NewOffloadedPodController instantiates and initializes the offloaded pod controller.
 func NewOffloadedPodController(cl client.Client, gatewayNetns ns.NetNS) (*OffloadedPodController, error) {
+	// Create the IPTables handler
 	iptablesHandler, err := liqoiptables.NewIPTHandler()
 	if err != nil {
 		return nil, err
 	}
+	// Create the IPSet handler
+	ipsetHandler := liqoipset.NewIPSetHandler()
+	// Create and return the controller
 	return &OffloadedPodController{
 		Client:       cl,
 		IPTHandler:   iptablesHandler,
+		IPSetHandler: &ipsetHandler,
 		gatewayNetns: gatewayNetns,
 		podsInfo:     &sync.Map{},
 	}, nil
@@ -137,7 +146,7 @@ func (r *OffloadedPodController) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 func (r *OffloadedPodController) ensureIptablesRules(netns ns.NetNS) error {
-	return r.EnsureClusterPodsForwardRules(r.podsInfo)
+	return r.EnsureRulesFor(r.podsInfo, r.IPSetHandler)
 }
 
 // SetupWithManager sets up the controller with the Manager.
