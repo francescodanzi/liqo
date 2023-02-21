@@ -146,7 +146,7 @@ func (r *OffloadedPodController) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 func (r *OffloadedPodController) ensureIptablesRules(netns ns.NetNS) error {
-	return r.EnsureRulesFor(r.podsInfo, r.IPSetHandler)
+	return r.EnsureRulesForOffloadedPods(r.podsInfo, r.IPSetHandler)
 }
 
 // SetupWithManager sets up the controller with the Manager.

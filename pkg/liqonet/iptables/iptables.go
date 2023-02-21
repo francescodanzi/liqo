@@ -44,6 +44,7 @@ const (
 	liqonetPreroutingClusterChainPrefix = "LIQO-PRRT-CLS-"
 	// liqonetForwardingClusterPodsChainPrefix prefix used to name the forwarding chains for pods in a specific cluster.
 	liqonetForwardingClusterPodsChainPrefix = "LIQO-FRWD-PODS-CLS-"
+
 	// liqonetInputClusterChainPrefix prefix used to name the input chains for a specific cluster.
 	liqonetForwardingExtClusterChainPrefix = "LIQO-FRWD-EXT-CLS-"
 	// liqonetPreRoutingMappingClusterChainPrefix prefix used to name the prerouting mapping chain for a specific cluster.
@@ -74,10 +75,14 @@ const (
 	DROP = "DROP"
 	// iptables module for accessing the connection tracking state for a packet
 	stateModule = "state"
+	// iptables module for accessing the connection tracking information for a packet
+	conntrackModule = "conntrack"
 	// iptables module for matching IP sets defined by ipsets
 	setModule = "set"
 	// ESTABLISHED state: the packet is associated with a connection which has seen packets in both directions
 	ESTABLISHED = "ESTABLISHED"
+	// RELATED state: the packet is associated with a connection which is related to another already ESTABLISHED connection
+	RELATED = "RELATED"
 	// NEW state: the packet has started a new connection, or otherwise associated with a connection which has not seen packets in both directions
 	NEW = "NEW"
 )
@@ -502,11 +507,11 @@ func (h IPTHandler) EnsurePodsForwardRules(tep *netv1alpha1.TunnelEndpoint) erro
 	if err != nil {
 		return err
 	}
-	return h.updateRulesPerChain(getClusterPodsForwardChain(tep.Spec.ClusterIdentity.ClusterID), rules, true, false)
+	return h.updateRulesPerChain(getClusterPodsForwardChain(tep.Spec.ClusterIdentity.ClusterID), rules, true, true)
 }
 
-// EnsureRulesFor ensures the forward rules for a given cluster and pod are in place and updated.
-func (h IPTHandler) EnsureRulesFor(podsInfo *sync.Map, IPSetHandler *liqoipset.IPSetHandler) error {
+// EnsureRulesForOffloadedPods ensures the forward rules for a given cluster and pod are in place and updated.
+func (h IPTHandler) EnsureRulesForOffloadedPods(podsInfo *sync.Map, IPSetHandler *liqoipset.IPSetHandler) error {
 	rulesPerCluster, err := buildRulesPerCluster(podsInfo, IPSetHandler)
 	if err != nil {
 		return err
@@ -843,6 +848,10 @@ func getClusterPodsForwardRules(tep *netv1alpha1.TunnelEndpoint) ([]IPTableRule,
 			// fmt.Sprintf("Drop all traffic from '%s' ('%s') if not towards its own offloaded pods",
 			// 	tep.Spec.ClusterIdentity.ClusterName, tep.Spec.ClusterIdentity.ClusterID),
 			"-j", DROP},
+		{
+			"-m", conntrackModule,
+			"--ctstate", (ESTABLISHED + "," + RELATED),
+			"-j", ACCEPT},
 	}, nil
 }
 
