@@ -93,6 +93,12 @@ type PodInfo struct {
 	Deleting        bool
 }
 
+type ReflectedEndpointsliceInfo struct {
+	EndpointsAddresses []string
+	RemoteClusterID    string
+	Deleting           bool
+}
+
 // IPTableRule is a slice of string. This is the format used by module go-iptables.
 type IPTableRule []string
 
@@ -512,7 +518,7 @@ func (h IPTHandler) EnsurePodsForwardRules(tep *netv1alpha1.TunnelEndpoint) erro
 
 // EnsureRulesForOffloadedPods ensures the forward rules for a given cluster and pod are in place and updated.
 func (h IPTHandler) EnsureRulesForOffloadedPods(podsInfo *sync.Map, IPSetHandler *liqoipset.IPSetHandler) error {
-	rulesPerCluster, err := buildRulesPerCluster(podsInfo, IPSetHandler)
+	rulesPerCluster, err := buildRulesPerClusterForOffloadedPods(podsInfo, IPSetHandler)
 	if err != nil {
 		return err
 	}
@@ -527,7 +533,7 @@ func (h IPTHandler) EnsureRulesForOffloadedPods(podsInfo *sync.Map, IPSetHandler
 	return nil
 }
 
-func buildRulesPerCluster(podsInfo *sync.Map, IPSetHandler *liqoipset.IPSetHandler) (map[string][]IPTableRule, error) {
+func buildRulesPerClusterForOffloadedPods(podsInfo *sync.Map, IPSetHandler *liqoipset.IPSetHandler) (map[string][]IPTableRule, error) {
 	// Map of Pod IPs per cluster
 	ipsPerCluster := map[string][]string{}
 
@@ -567,6 +573,81 @@ func buildRulesPerCluster(podsInfo *sync.Map, IPSetHandler *liqoipset.IPSetHandl
 			// Add pod's IP entry to IP set
 			if err := IPSetHandler.AddEntry(podIP, ipset); err != nil {
 				klog.Infof("Error while adding entry %q to IP set %q: %w", podIP, ipset.Name, err)
+				return nil, err
+			}
+		}
+
+		// Add DROP and match-set rules
+		rulesPerCluster[clusterID] = append(
+			rulesPerCluster[clusterID],
+			IPTableRule{
+				"-j", DROP},
+			IPTableRule{
+				"-m", setModule,
+				"--match-set", ipset.Name, "dst",
+				"-j", ACCEPT})
+	}
+
+	return rulesPerCluster, nil
+}
+
+// EnsureRulesForOffloadedPods ensures the forward rules for a given cluster and pod are in place and updated.
+func (h IPTHandler) EnsureRulesForRemoteEndpointslicesReflected(endpointslicesInfo *sync.Map, IPSetHandler *liqoipset.IPSetHandler) error {
+	rulesPerCluster, err := buildRulesPerClusterForRemoteEndpointslicesReflected(endpointslicesInfo, IPSetHandler)
+	if err != nil {
+		return err
+	}
+
+	for clusterID, rules := range rulesPerCluster {
+		// Insert each subsequent rule at top of chain as the first rule (DROP rules will be last)
+		if err := h.updateRulesPerChain(getClusterPodsForwardChain(clusterID), rules, true, true); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func buildRulesPerClusterForRemoteEndpointslicesReflected(endpointslicesInfo *sync.Map, IPSetHandler *liqoipset.IPSetHandler) (map[string][]IPTableRule, error) {
+	// Map of Pod IPs per cluster
+	ipsPerCluster := map[string][]string{}
+
+	// Populate Pod IPs per cluster
+	endpointslicesInfo.Range(func(key, value any) bool {
+		endpointliceInfo := value.(ReflectedEndpointsliceInfo)
+		if _, ok := ipsPerCluster[endpointliceInfo.RemoteClusterID]; !ok {
+			// Add remote cluster ID key (regardless of pod being deleted or not)
+			ipsPerCluster[endpointliceInfo.RemoteClusterID] = []string{}
+		}
+		if !endpointliceInfo.Deleting {
+			ipsPerCluster[endpointliceInfo.RemoteClusterID] = append(ipsPerCluster[endpointliceInfo.RemoteClusterID], endpointliceInfo.EndpointsAddresses...)
+		}
+		return true
+	})
+
+	// Map of IPTables rules and IP sets per cluster
+	rulesPerCluster := map[string][]IPTableRule{}
+
+	// Populate IPTables rules and IP set per cluster
+	for clusterID, ips := range ipsPerCluster {
+		// Create IP set
+		setName := fmt.Sprintf("%s-%s", "SET-ENDPOINTS-CLS", strings.Split(clusterID, "-")[0])
+		ipset, err := IPSetHandler.CreateSet(setName, "")
+		if err != nil {
+			klog.Infof("Error while creating IP set %q: %w", setName, err)
+			return nil, err
+		}
+
+		// Clear IP set (just in case it already existed)
+		if err := IPSetHandler.FlushSet(ipset.Name); err != nil {
+			klog.Infof("Error while deleting all entries from IP set %q: %w", setName, err)
+			return nil, err
+		}
+
+		for _, ip := range ips {
+			// Add pod's IP entry to IP set
+			if err := IPSetHandler.AddEntry(ip, ipset); err != nil {
+				klog.Infof("Error while adding entry %q to IP set %q: %w", ip, ipset.Name, err)
 				return nil, err
 			}
 		}

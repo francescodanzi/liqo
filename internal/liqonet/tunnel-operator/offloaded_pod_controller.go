@@ -20,6 +20,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/containernetworking/plugins/pkg/ns"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
@@ -29,7 +30,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	"github.com/containernetworking/plugins/pkg/ns"
 	liqoconsts "github.com/liqotech/liqo/pkg/consts"
 	liqoipset "github.com/liqotech/liqo/pkg/liqonet/ipset"
 	liqoiptables "github.com/liqotech/liqo/pkg/liqonet/iptables"

@@ -183,6 +183,15 @@ func runGatewayOperator(commonFlags *liqonetCommonFlags, gatewayFlags *gatewayOp
 		klog.Errorf("unable to setup offloaded pod controller: %s", err)
 		os.Exit(1)
 	}
+	reflectedEndpointsliceController, err := tunneloperator.NewReflectedEndpointsliceController(main.GetClient(), gatewayNetns)
+	if err != nil {
+		klog.Errorf("an error occurred while creating the reflected endpointslice controller: %v", err)
+		os.Exit(1)
+	}
+	if err = reflectedEndpointsliceController.SetupWithManager(main); err != nil {
+		klog.Errorf("unable to setup reflected endpointslice controller: %s", err)
+		os.Exit(1)
+	}
 
 	klog.Info("Starting manager as Tunnel-Operator")
 	if err := main.Start(tunnelController.SetupSignalHandlerForTunnelOperator()); err != nil {

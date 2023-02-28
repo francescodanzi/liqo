@@ -82,6 +82,9 @@ type TunnelController struct {
 // +kubebuilder:rbac:groups=coordination.k8s.io,namespace="do-not-care",resources=leases,verbs=get;create;update
 // +kubebuilder:rbac:groups=core,namespace="do-not-care",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+//+kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch;
+//+kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices/endpoints,verbs=get;list;watch;
+//+kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices/endpoints/addresses,verbs=get;list;watch;
 
 // NewTunnelController instantiates and initializes the tunnel controller.
 func NewTunnelController(podIP, namespace string, er record.EventRecorder, k8sClient k8s.Interface, cl client.Client,
