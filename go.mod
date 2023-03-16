@@ -55,6 +55,7 @@ require (
 	k8s.io/component-helpers v0.26.2
 	k8s.io/klog/v2 v2.80.1
 	k8s.io/kubectl v0.26.2
+	k8s.io/kubernetes v1.26.2
 	k8s.io/metrics v0.26.2
 	k8s.io/utils v0.0.0-20221128185143-99ec85e7a448
 	sigs.k8s.io/aws-iam-authenticator v0.6.5
