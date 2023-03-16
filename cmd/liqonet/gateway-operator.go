@@ -94,6 +94,13 @@ func runGatewayOperator(commonFlags *liqonetCommonFlags, gatewayFlags *gatewayOp
 		klog.Errorf("unable to get pod namespace: %v", err)
 		os.Exit(1)
 	}
+
+	/* podsLabelRequirement, err := labels.NewRequirement(liqoconst.ManagedByLabelKey, selection.Equals, []string{liqoconst.ManagedByShadowPodValue})
+	utilruntime.Must(err)
+
+	endpointslicesLabelRequirement, err := labels.NewRequirement(discoveryv1.LabelManagedBy, selection.Equals, []string{liqovk.EndpointSliceManagedBy})
+	utilruntime.Must(err) */
+
 	main, err := ctrl.NewManager(restcfg.SetRateLimiter(ctrl.GetConfigOrDie()), ctrl.Options{
 		MapperProvider:                mapper.LiqoMapperProvider(scheme),
 		Scheme:                        scheme,
@@ -106,11 +113,17 @@ func runGatewayOperator(commonFlags *liqonetCommonFlags, gatewayFlags *gatewayOp
 		LeaseDuration:                 &leaseDuration,
 		RenewDeadline:                 &renewDeadLine,
 		RetryPeriod:                   &retryPeriod,
-		// NewCache: cache.BuilderWithOptions(cache.Options{
-		// 	SelectorsByObject: cache.SelectorsByObject{
-		// 		&corev1.Pod{}: {Field: fields.OneTermEqualSelector("metadata.namespace", podNamespace)},
-		// 	},
-		// }),
+		/* NewCache: cache.BuilderWithOptions(cache.Options{
+			SelectorsByObject: cache.SelectorsByObject{
+				&corev1.Pod{}: {
+					Field: fields.OneTermEqualSelector("metadata.namespace", podNamespace),
+					Label: labels.NewSelector().Add(*podsLabelRequirement),
+				},
+				&discoveryv1.EndpointSlice{}: {
+					Label: labels.NewSelector().Add(*endpointslicesLabelRequirement),
+				},
+			},
+		}), */
 	})
 	if err != nil {
 		klog.Errorf("unable to get main manager: %s", err)

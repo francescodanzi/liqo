@@ -17,6 +17,7 @@ package mapper
 import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -84,6 +85,9 @@ func addDefaults(dClient *discovery.DiscoveryClient, mapper *meta.DefaultRESTMap
 
 	// Kubernetes groups
 	if err = addGroup(dClient, corev1.SchemeGroupVersion, mapper); err != nil {
+		return err
+	}
+	if err = addGroup(dClient, discoveryv1.SchemeGroupVersion, mapper); err != nil {
 		return err
 	}
 	if err = addGroup(dClient, appsv1.SchemeGroupVersion, mapper); err != nil {

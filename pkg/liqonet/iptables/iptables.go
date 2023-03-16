@@ -659,7 +659,7 @@ func buildRulesPerClusterForRemoteEndpointslicesReflected(endpointslicesInfo *sy
 				"-j", DROP},
 			IPTableRule{
 				"-m", setModule,
-				"--match-set", ipset.Name, "dst",
+				"--match-set", ipset.Name, "src",
 				"-j", ACCEPT})
 	}
 

@@ -48,9 +48,9 @@ type reflectedEndpointsliceController struct {
 	endpointslicesInfo *sync.Map
 }
 
-//+kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch;
-//+kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices/endpoints,verbs=get;list;watch;
-//+kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices/endpoints/addresses,verbs=get;list;watch;
+// +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch
+// +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices/endpoints,verbs=get;list;watch
+// +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices/endpoints/addresses,verbs=get;list;watch
 
 // NewOffloadedPodController instantiates and initializes the offloaded service controller.
 func NewReflectedEndpointsliceController(cl client.Client, gatewayNetns ns.NetNS) (*reflectedEndpointsliceController, error) {
